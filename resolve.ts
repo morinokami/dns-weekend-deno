@@ -6,9 +6,9 @@ import {
 } from "./utils.ts";
 import { SeekableBytesReader } from "./seekable.ts";
 
-const TYPE_A = 1;
-const TYPE_NS = 2;
-const TYPE_TXT = 16;
+export const TYPE_A = 1;
+export const TYPE_NS = 2;
+export const TYPE_TXT = 16;
 const CLASS_IN = 1;
 
 class DNSHeader {
@@ -236,12 +236,18 @@ async function lookupDomain(domainName: string): Promise<string> {
   // parse the response
   const packet = parseDNSPacket(response[0]);
   // return the first IP address
-  return typeof packet.answers[0].data === 'string' ? packet.answers[0].data : ipToString(packet.answers[0].data);
+  return typeof packet.answers[0].data === "string"
+    ? packet.answers[0].data
+    : ipToString(packet.answers[0].data);
 }
 
 // Part 3
 
-async function sendQuery(ipAddress: string, domainName: string, recordType: number): Promise<DNSPacket> {
+async function sendQuery(
+  ipAddress: string,
+  domainName: string,
+  recordType: number,
+): Promise<DNSPacket> {
   const query = buildQuery(domainName, recordType);
   const socket = Deno.listenDatagram({
     hostname: "0.0.0.0",
@@ -283,8 +289,11 @@ function getNameserver(packet: DNSPacket): string {
   return "";
 }
 
-export async function resolve(domainName: string, recortType: number): Promise<string> {
-  let nameserver = '198.41.0.4'
+export async function resolve(
+  domainName: string,
+  recortType: number,
+): Promise<string> {
+  let nameserver = "198.41.0.4";
   while (true) {
     console.log(`Querying ${nameserver} for ${domainName}`);
     const response = await sendQuery(nameserver, domainName, recortType);
@@ -298,7 +307,7 @@ export async function resolve(domainName: string, recortType: number): Promise<s
     } else if (nsDomain) {
       nameserver = await resolve(nsDomain, TYPE_A);
     } else {
-      console.log(response)
+      console.log(response);
       throw new Error("Something went wrong");
     }
   }

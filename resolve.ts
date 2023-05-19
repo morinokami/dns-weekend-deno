@@ -36,7 +36,7 @@ class DNSRecord {
     public type_: number,
     public class_: number,
     public ttl: number,
-    public data: Uint8Array,
+    public data: Uint8Array | string,
   ) {}
 }
 
@@ -88,8 +88,7 @@ function encodeDnsName(domainName: string): Uint8Array {
 function buildQuery(domainName: string, recordType: number): Uint8Array {
   const name = encodeDnsName(domainName);
   const id = Math.floor(Math.random() * 65536);
-  const RECURSION_DESIRED = 1 << 8;
-  const header = new DNSHeader(id, RECURSION_DESIRED, 1);
+  const header = new DNSHeader(id, 0, 1);
   const question = new DNSQuestion(name, recordType, CLASS_IN);
   return concatUint8Arrays(headerToBytes(header), questionToBytes(question));
 }
@@ -181,7 +180,14 @@ function parseRecord(reader: SeekableBytesReader): DNSRecord {
   const ttl = view.getUint32(4, false);
   const dataLen = view.getUint16(8, false);
 
-  const data = reader.read(dataLen);
+  let data: Uint8Array | string;
+  if (type_ === TYPE_NS) {
+    data = decodeName(reader);
+  } else if (type_ === TYPE_A) {
+    data = ipToString(reader.read(4));
+  } else {
+    data = reader.read(dataLen);
+  }
 
   return new DNSRecord(name, type_, class_, ttl, data);
 }
@@ -230,25 +236,70 @@ async function lookupDomain(domainName: string): Promise<string> {
   // parse the response
   const packet = parseDNSPacket(response[0]);
   // return the first IP address
-  return ipToString(packet.answers[0].data);
+  return typeof packet.answers[0].data === 'string' ? packet.answers[0].data : ipToString(packet.answers[0].data);
 }
-
-console.log(await lookupDomain("example.com"));
 
 // Part 3
 
-// async function sendQuery(ipAddress: string, domainName: string, recordType: number): Promise<DNSPacket> {
-//   const query = buildQuery(domainName, recordType);
-//   const socket = Deno.listenDatagram({
-//     hostname: "0.0.0.0",
-//     port: 0,
-//     transport: "udp",
-//   });
-//   socket.send(query, { hostname: ipAddress, port: 53, transport: "udp" });
-//   const [data, _] = await socket.receive();
-//   socket.close();
-//   return await parseDNSPacket(data);
-// }
+async function sendQuery(ipAddress: string, domainName: string, recordType: number): Promise<DNSPacket> {
+  const query = buildQuery(domainName, recordType);
+  const socket = Deno.listenDatagram({
+    hostname: "0.0.0.0",
+    port: 0,
+    transport: "udp",
+  });
+  socket.send(query, { hostname: ipAddress, port: 53, transport: "udp" });
 
-// const response = await sendQuery("216.239.32.10", "google.com", TYPE_A);
-// console.log(response.answers);
+  const [data, _] = await socket.receive();
+  socket.close();
+  return parseDNSPacket(data);
+}
+
+function getAnswer(packet: DNSPacket): string {
+  for (const answer of packet.answers) {
+    if (answer.type_ === TYPE_A) {
+      return answer.data as string;
+    }
+  }
+  return "";
+}
+
+function getNameserverIp(packet: DNSPacket): string {
+  for (const additional of packet.additionals) {
+    if (additional.type_ === TYPE_A) {
+      return additional.data as string;
+    }
+  }
+  return "";
+}
+
+function getNameserver(packet: DNSPacket): string {
+  for (const answer of packet.authorities) {
+    if (answer.type_ === TYPE_NS) {
+      const decoder = new TextDecoder("utf-8");
+      return decoder.decode(answer.data as Uint8Array);
+    }
+  }
+  return "";
+}
+
+export async function resolve(domainName: string, recortType: number): Promise<string> {
+  let nameserver = '198.41.0.4'
+  while (true) {
+    console.log(`Querying ${nameserver} for ${domainName}`);
+    const response = await sendQuery(nameserver, domainName, recortType);
+    const ip = getAnswer(response);
+    const nsIP = getNameserverIp(response);
+    const nsDomain = getNameserver(response);
+    if (ip) {
+      return ip;
+    } else if (nsIP) {
+      nameserver = nsIP;
+    } else if (nsDomain) {
+      nameserver = await resolve(nsDomain, TYPE_A);
+    } else {
+      console.log(response)
+      throw new Error("Something went wrong");
+    }
+  }
+}

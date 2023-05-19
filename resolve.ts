@@ -1,4 +1,4 @@
-// utility functions
+// utiliies
 
 function concatUint8Arrays(...arrays: Uint8Array[]): Uint8Array {
   let totalLength = 0;
@@ -46,6 +46,60 @@ function unpackUnsignedShortsBigEndian(buffer: Uint8Array): number[] {
   }
 
   return values;
+}
+
+const TYPE_A = 1;
+const TYPE_NS = 2;
+const TYPE_TXT = 16;
+const CLASS_IN = 1;
+
+class SeekableBufReader {
+  private position = 0;
+  private data: Uint8Array;
+
+  constructor(data: Uint8Array) {
+    this.data = data;
+  }
+
+  read(p: Uint8Array): number | null {
+    if (this.position >= this.data.length) {
+      return null;
+    }
+
+    let i = 0;
+    while (i < p.length && this.position < this.data.length) {
+      p[i] = this.data[this.position];
+      i++;
+      this.position++;
+    }
+    return i;
+  }
+
+  readByte(): number | null {
+    if (this.position >= this.data.length) {
+      return null;
+    }
+    return this.data[this.position++];
+  }
+
+  readFull(p: Uint8Array): Uint8Array | null {
+    const bytesRead = this.read(p);
+    if (bytesRead === null || bytesRead < p.length) {
+      return null;
+    }
+    return p;
+  }
+
+  seek(offset: number) {
+    if (offset < 0 || offset > this.data.length) {
+      throw new Error("Offset is out of range");
+    }
+    this.position = offset;
+  }
+
+  currentPosition(): number {
+    return this.position;
+  }
 }
 
 // Part 1
@@ -122,9 +176,6 @@ console.assert(
   } !== 06676f6f676c6503636f6d00`,
 );
 
-const TYPE_A = 1;
-const CLASS_IN = 1;
-
 function buildQuery(domainName: string, recordType: number): Uint8Array {
   const name = encodeDnsName(domainName);
   const id = Math.floor(Math.random() * 65536);
@@ -145,8 +196,6 @@ console.assert(
 
 // Part 2
 
-import { Buffer, BufReader } from "https://deno.land/std@0.121.0/io/buffer.ts";
-
 class DNSRecord {
   constructor(
     public name: Uint8Array,
@@ -157,9 +206,9 @@ class DNSRecord {
   ) {}
 }
 
-async function parseHeader(reader: BufReader): Promise<DNSHeader> {
+function parseHeader(reader: SeekableBufReader): DNSHeader {
   const headerBuffer = new Uint8Array(12);
-  await reader.readFull(headerBuffer);
+  reader.readFull(headerBuffer);
   const items = unpackUnsignedShortsBigEndian(headerBuffer);
   return new DNSHeader(
     items[0],
@@ -171,13 +220,13 @@ async function parseHeader(reader: BufReader): Promise<DNSHeader> {
   );
 }
 
-async function decodeNameSimple(reader: BufReader): Promise<Uint8Array> {
+function decodeNameSimple(reader: SeekableBufReader): Uint8Array {
   const parts: Uint8Array[] = [];
   let length: number;
 
-  while ((length = (await reader.readByte()) as number) !== 0) {
+  while ((length = (reader.readByte()) as number) !== 0) {
     const part = new Uint8Array(length);
-    await reader.readFull(part);
+    reader.readFull(part);
     parts.push(part);
   }
 
@@ -194,10 +243,10 @@ async function decodeNameSimple(reader: BufReader): Promise<Uint8Array> {
   return combined;
 }
 
-async function parseQuestion(reader: BufReader): Promise<DNSQuestion> {
-  const name = await decodeNameSimple(reader);
+function parseQuestion(reader: SeekableBufReader): DNSQuestion {
+  const name = decodeNameSimple(reader);
   const buffer = new Uint8Array(4);
-  await reader.readFull(buffer);
+  reader.readFull(buffer);
   const view = new DataView(buffer.buffer);
   const type = view.getUint16(0, false);
   const class_ = view.getUint16(2, false);
@@ -205,21 +254,18 @@ async function parseQuestion(reader: BufReader): Promise<DNSQuestion> {
   return new DNSQuestion(name, type, class_);
 }
 
-async function decodeName(
-  reader: BufReader,
-  sourceBuffer: Buffer,
-): Promise<Uint8Array> {
+function decodeName(reader: SeekableBufReader): Uint8Array {
   const parts: Uint8Array[] = [];
   let length: number;
 
-  while ((length = await reader.readByte() as number) !== 0) {
+  while ((length = reader.readByte() as number) !== 0) {
     if (length & 0b1100_0000) {
-      const name = await decodeCompressedName(length, reader, sourceBuffer);
+      const name = decodeCompressedName(length, reader);
       parts.push(name);
       break;
     } else {
       const part = new Uint8Array(length);
-      await reader.readFull(part);
+      reader.readFull(part);
       parts.push(part);
     }
   }
@@ -237,34 +283,26 @@ async function decodeName(
   return combined;
 }
 
-async function decodeCompressedName(
+function decodeCompressedName(
   length: number,
-  reader: BufReader,
-  sourceBuffer: Buffer,
-): Promise<Uint8Array> {
+  reader: SeekableBufReader,
+): Uint8Array {
   const pointerBytes = new Uint8Array(2);
   pointerBytes[0] = length & 0b0011_1111;
-  pointerBytes[1] = await reader.readByte() as number;
+  pointerBytes[1] = reader.readByte() as number;
   const pointer = unpackUnsignedShortsBigEndian(pointerBytes)[0];
-
-  const tempBuffer = new Uint8Array(pointer);
-  sourceBuffer.read(tempBuffer);
-  const name = await decodeName(
-    new BufReader(new Buffer(tempBuffer)),
-    sourceBuffer,
-  );
-
+  const originalPosition = reader.currentPosition();
+  reader.seek(pointer);
+  const name = decodeName(reader);
+  reader.seek(originalPosition);
   return name;
 }
 
-async function parseRecord(
-  reader: BufReader,
-  sourceBuffer: Buffer,
-): Promise<DNSRecord> {
-  const name = await decodeName(reader, sourceBuffer);
+function parseRecord(reader: SeekableBufReader): DNSRecord {
+  const name = decodeName(reader);
 
   const buffer = new Uint8Array(10);
-  await reader.readFull(buffer);
+  reader.readFull(buffer);
   const view = new DataView(buffer.buffer);
   const type_ = view.getUint16(0, false);
   const class_ = view.getUint16(2, false);
@@ -272,7 +310,7 @@ async function parseRecord(
   const dataLen = view.getUint16(8, false);
 
   const data = new Uint8Array(dataLen);
-  await reader.readFull(data);
+  reader.readFull(data);
 
   return new DNSRecord(name, type_, class_, ttl, data);
 }
@@ -287,24 +325,24 @@ class DNSPacket {
   ) {}
 }
 
-async function parseDNSPacket(data: Uint8Array): Promise<DNSPacket> {
-  const reader = new BufReader(new Buffer(data));
-  const header = await parseHeader(reader);
+function parseDNSPacket(data: Uint8Array): DNSPacket {
+  const reader = new SeekableBufReader(data);
+  const header = parseHeader(reader);
   const questions = [];
   for (let i = 0; i < header.numQuestions; i++) {
-    questions.push(await parseQuestion(reader));
+    questions.push(parseQuestion(reader));
   }
   const answers = [];
   for (let i = 0; i < header.numAnswers; i++) {
-    answers.push(await parseRecord(reader, new Buffer(data)));
+    answers.push(parseRecord(reader));
   }
   const authorities = [];
   for (let i = 0; i < header.numAuthorities; i++) {
-    authorities.push(await parseRecord(reader, new Buffer(data)));
+    authorities.push(parseRecord(reader));
   }
   const additionals = [];
   for (let i = 0; i < header.numAdditionals; i++) {
-    additionals.push(await parseRecord(reader, new Buffer(data)));
+    additionals.push(parseRecord(reader));
   }
 
   return new DNSPacket(header, questions, answers, authorities, additionals);
@@ -329,9 +367,27 @@ async function lookupDomain(domainName: string): Promise<string> {
   // close the socket
   socket.close();
   // parse the response
-  const packet = await parseDNSPacket(response[0]);
+  const packet = parseDNSPacket(response[0]);
   // return the first IP address
   return ipToString(packet.answers[0].data);
 }
 
-console.log(await lookupDomain("example.com"));
+console.log(await lookupDomain("www.facebook.com"));
+
+// Part 3
+
+// async function sendQuery(ipAddress: string, domainName: string, recordType: number): Promise<DNSPacket> {
+//   const query = buildQuery(domainName, recordType);
+//   const socket = Deno.listenDatagram({
+//     hostname: "0.0.0.0",
+//     port: 0,
+//     transport: "udp",
+//   });
+//   socket.send(query, { hostname: ipAddress, port: 53, transport: "udp" });
+//   const [data, _] = await socket.receive();
+//   socket.close();
+//   return await parseDNSPacket(data);
+// }
+
+// const response = await sendQuery("216.239.32.10", "google.com", TYPE_A);
+// console.log(response.answers);

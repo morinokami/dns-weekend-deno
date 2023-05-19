@@ -307,7 +307,6 @@ export async function resolve(
     } else if (nsDomain) {
       nameserver = await resolve(nsDomain, TYPE_A);
     } else {
-      console.log(response);
       throw new Error("Something went wrong");
     }
   }

@@ -1,4 +1,4 @@
-# dns-in-a-weekend
+# dns-weekend-deno
 
 https://implement-dns.wizardzines.com/ translated into Deno.
 
